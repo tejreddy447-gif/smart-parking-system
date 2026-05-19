@@ -75,7 +75,7 @@ function App() {
     e.preventDefault();
     if(!newSlotId || !newSlotDist) return alert("Fill out slot fields!");
     try {
-      const response = await fetch('http://localhost:8000/admin/add-slot', {
+      const response = await fetch('https://smart-parking-backend.onrender.com/parking/status', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id: parseInt(newSlotId), type: newSlotType, distance: parseInt(newSlotDist) })
