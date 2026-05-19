@@ -1,6 +1,6 @@
 import random
 import asyncio
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -34,7 +34,7 @@ LEGAL_PLAYBOOK = {
     }
 }
 
-# --- ADMIN INPUT VALIDATION SCHEMAS ---
+# --- INPUT VALIDATION SCHEMAS ---
 class PlaybookUpdate(BaseModel):
     max_days: int
     termination_clause: str
@@ -45,11 +45,16 @@ class NewSlotInput(BaseModel):
     type: str
     distance: int
 
+# NEW: Schema to handle a user trying to book a specific slot
+class SlotBookingInput(BaseModel):
+    slot_id: int
+
 
 # --- PARKING SIMULATION ENGINE ---
 async def simulate_occupancy_logic():
     while True:
         for slot in parking_slots:
+            # Only randomly change slots that aren't actively managed/interrupted immediately
             if random.random() < 0.2:
                 slot["status"] = "occupied" if slot["status"] == "vacant" else "vacant"
         await asyncio.sleep(5)
@@ -60,9 +65,32 @@ async def startup_event():
 
 
 # --- USER ENDPOINTS ---
+
 @app.get("/parking/status")
 async def get_parking_status():
     return parking_slots
+
+# NEW FEATURE: User interaction endpoint to book a vacant slot
+@app.post("/user/book-slot")
+async def book_parking_slot(data: SlotBookingInput):
+    """Allows a standard user to select and instantly occupy a vacant slot."""
+    global parking_slots
+    
+    # 1. Look for the requested slot in our list
+    target_slot = next((slot for slot in parking_slots if slot["id"] == data.slot_id), None)
+    
+    # 2. Check if the slot exists
+    if target_slot is None:
+        raise HTTPException(status_code=404, detail=f"Parking slot ID {data.slot_id} does not exist.")
+        
+    # 3. Check if the slot is already occupied
+    if target_slot["status"] == "occupied":
+        raise HTTPException(status_code=400, detail=f"Reservation failed. Slot ID {data.slot_id} is already taken.")
+        
+    # 4. Book the slot successfully
+    target_slot["status"] = "occupied"
+    return {"message": f"Success! Parking slot {data.slot_id} has been reserved for your vehicle."}
+
 
 @app.post("/contract/review")
 async def review_contract(file: UploadFile = File(...)):
@@ -87,16 +115,14 @@ async def review_contract(file: UploadFile = File(...)):
     }
 
 
-# --- NEW ADMIN ENDPOINTS ---
+# --- ADMIN ENDPOINTS ---
 
 @app.get("/admin/playbook")
 async def get_playbook():
-    """Returns current playbook rules to fill the admin form inputs."""
     return LEGAL_PLAYBOOK
 
 @app.post("/admin/update-playbook")
 async def update_playbook(data: PlaybookUpdate):
-    """Allows the admin to dynamically alter policy criteria."""
     global LEGAL_PLAYBOOK
     LEGAL_PLAYBOOK["termination_notice"]["max_days"] = data.max_days
     LEGAL_PLAYBOOK["termination_notice"]["standard_clause"] = data.termination_clause
@@ -105,11 +131,9 @@ async def update_playbook(data: PlaybookUpdate):
 
 @app.post("/admin/add-slot")
 async def add_parking_slot(data: NewSlotInput):
-    """Allows the admin to physically expand the smart parking deck layout."""
     global parking_slots
-    # Check if ID already exists
     if any(s["id"] == data.id for s in parking_slots):
-        return {"error": "Slot ID already exists"}, 400
+        raise HTTPException(status_code=400, detail="Slot ID already exists")
         
     new_slot = {
         "id": data.id,
