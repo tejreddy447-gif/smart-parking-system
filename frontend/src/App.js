@@ -5,6 +5,9 @@ function App() {
   const [analysis, setAnalysis] = useState(null);
   const [loading, setLoading] = useState(false);
   
+  // Replace this placeholder string with your actual live Render URL!
+  const API_BASE_URL = "https://smart-parking-backend-0hqz.onrender.com";
+  
   // Admin Panel states
   const [showAdmin, setShowAdmin] = useState(false);
   const [maxDays, setMaxDays] = useState(30);
@@ -18,7 +21,7 @@ function App() {
   // 1. Fetch Parking Grid
   useEffect(() => {
     const fetchParking = () => {
-      fetch('http://localhost:8000/parking/status')
+      fetch(`${API_BASE_URL}/parking/status`)
         .then(res => res.json())
         .then(data => setSlots(data))
         .catch(err => console.error("Backend unreachable:", err));
@@ -26,11 +29,11 @@ function App() {
     fetchParking();
     const interval = setInterval(fetchParking, 5000);
     return () => clearInterval(interval);
-  }, []);
+  }, [API_BASE_URL]);
 
-  // 2. Fetch Existing Playbook Rules on Load to populate admin inputs
+  // 2. Fetch Existing Playbook Rules on Load
   useEffect(() => {
-    fetch('http://localhost:8000/admin/playbook')
+    fetch(`${API_BASE_URL}/admin/playbook`)
       .then(res => res.json())
       .then(data => {
         setMaxDays(data.termination_notice.max_days);
@@ -38,7 +41,31 @@ function App() {
         setLiabClause(data.liability_cap.standard_clause);
       })
       .catch(err => console.log("Admin playbook setup failed"));
-  }, []);
+  }, [API_BASE_URL]);
+
+  // NEW FEATURE: Handle User Slot Booking Selection
+  const handleBookSlot = async (slotId) => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/user/book-slot`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slot_id: slotId })
+      });
+      const data = await response.json();
+      
+      if (response.ok) {
+        alert(data.message);
+        // Optimistically update frontend state right away
+        setSlots(prevSlots => 
+          prevSlots.map(slot => slot.id === slotId ? { ...slot, status: 'occupied' } : slot)
+        );
+      } else {
+        alert(data.detail || "Booking failed.");
+      }
+    } catch (error) {
+      alert("Network error trying to process slot booking");
+    }
+  };
 
   // 3. Document Analysis Submit
   const handleFileUpload = async (event) => {
@@ -48,7 +75,7 @@ function App() {
     const formData = new FormData();
     formData.append('file', file);
     try {
-      const response = await fetch('http://localhost:8000/contract/review', { method: 'POST', body: formData });
+      const response = await fetch(`${API_BASE_URL}/contract/review`, { method: 'POST', body: formData });
       const data = await response.json();
       setAnalysis(data);
     } catch (error) {
@@ -60,7 +87,7 @@ function App() {
   const handlePlaybookUpdate = async (e) => {
     e.preventDefault();
     try {
-      const response = await fetch('http://localhost:8000/admin/update-playbook', {
+      const response = await fetch(`${API_BASE_URL}/admin/update-playbook`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ max_days: maxDays, termination_clause: termClause, liability_clause: liabClause })
@@ -75,16 +102,19 @@ function App() {
     e.preventDefault();
     if(!newSlotId || !newSlotDist) return alert("Fill out slot fields!");
     try {
-      const response = await fetch('https://smart-parking-backend.onrender.com/parking/status', {
+      const response = await fetch(`${API_BASE_URL}/admin/add-slot`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id: parseInt(newSlotId), type: newSlotType, distance: parseInt(newSlotDist) })
       });
+      const resData = await response.json();
       if(response.ok) {
-        alert("New sensor spot provisioned!");
+        alert(resData.message || "New sensor spot provisioned!");
         setNewSlotId("");
         setNewSlotDist("");
-      } else { alert("Failed to append spot"); }
+      } else { 
+        alert(resData.detail || "Failed to append spot"); 
+      }
     } catch (err) { alert("Error connecting to server"); }
   };
 
@@ -142,18 +172,33 @@ function App() {
       {/* --- STANDARD SMART PARKING GRID VIEW --- */}
       <section style={{ backgroundColor: '#fff', padding: '20px', borderRadius: '12px', boxShadow: '0 4px 6px rgba(0,0,0,0.1)', marginBottom: '30px' }}>
         <h2>🚗 Real-Time Smart Parking Deck</h2>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: '15px' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: '15px' }}>
           {Array.isArray(slots) && slots.length > 0 ? (
             slots.map(slot => (
               <div key={slot.id} style={{
                 padding: '15px', borderRadius: '10px', border: '2px solid #333', textAlign: 'center',
                 backgroundColor: slot.status === 'vacant' ? '#d4edda' : '#f8d7da',
-                color: slot.status === 'vacant' ? '#155724' : '#721c24'
+                color: slot.status === 'vacant' ? '#155724' : '#721c24',
+                display: 'flex', flexDirection: 'column', justifyContent: 'space-between', minHeight: '140px'
               }}>
-                <div style={{ fontWeight: 'bold' }}>Slot {slot.id}</div>
-                <div style={{ fontSize: '0.85em' }}>{slot.type}</div>
-                <div style={{ fontSize: '0.8em', fontStyle: 'italic' }}>{slot.distance}m away</div>
-                <div style={{ marginTop: '10px', fontWeight: 'bold', fontSize: '0.75em' }}>{slot.status}</div>
+                <div>
+                  <div style={{ fontWeight: 'bold' }}>Slot {slot.id}</div>
+                  <div style={{ fontSize: '0.85em' }}>{slot.type}</div>
+                  <div style={{ fontSize: '0.8em', fontStyle: 'italic' }}>{slot.distance}m away</div>
+                  <div style={{ marginTop: '5px', fontWeight: 'bold', fontSize: '0.75em', textTransform: 'uppercase' }}>{slot.status}</div>
+                </div>
+                
+                {/* NEW FEATURE ACTION BUTTON: Allows normal user to click and book directly */}
+                {slot.status === 'vacant' && (
+                  <button 
+                    onClick={() => handleBookSlot(slot.id)}
+                    style={{
+                      marginTop: '10px', padding: '5px 10px', background: '#155724', color: '#fff',
+                      border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '0.75em', fontWeight: 'bold'
+                    }}>
+                    Reserve Slot
+                  </button>
+                )}
               </div>
             ))
           ) : ( <p>Awaiting active stream telemetry...</p> )}
