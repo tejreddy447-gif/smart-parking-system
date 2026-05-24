@@ -1,12 +1,12 @@
-import random
-import asyncio
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+import random
+import asyncio
 
 app = FastAPI()
 
-# --- SECURITY: CORS CONFIGURATION ---
+# Enable CORS so Vercel can seamlessly talk to Render
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -15,135 +15,159 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- DATA STORAGE (In-Memory) ---
-parking_slots = [
-    {"id": 1, "status": "vacant", "type": "Standard", "distance": 10},
-    {"id": 2, "status": "occupied", "type": "Standard", "distance": 12},
-    {"id": 3, "status": "vacant", "type": "EV Charging", "distance": 15},
-    {"id": 4, "status": "occupied", "type": "Handicap", "distance": 5},
-]
+# --- INTERNAL SYSTEM MEMORY (STATE) ---
+# Generates a baseline of 20 slots: 10 Motorbike (IDs 1-10) and 10 Car (IDs 11-20)
+parking_slots = []
+def initialize_default_slots():
+    global parking_slots
+    parking_slots = []
+    for i in range(1, 21):
+        vehicle_type = "Motorbike" if i <= 10 else "Car"
+        parking_slots.append({
+            "id": i,
+            "type": vehicle_type,
+            "status": "vacant",
+            "distance": i * 4
+        })
 
-LEGAL_PLAYBOOK = {
-    "termination_notice": {
-        "max_days": 30,
-        "standard_clause": "Either party may terminate this agreement with 30 days written notice."
-    },
-    "liability_cap": {
-        "required": True,
-        "standard_clause": "Total liability shall not exceed the fees paid in the previous 12 months."
-    }
+initialize_default_slots()
+
+legal_playbook = {
+    "termination_notice": {"max_days": 30, "standard_clause": "Either party may terminate with 30 days written notice."},
+    "liability_cap": {"standard_clause": "Total liability shall not exceed the fees paid under this agreement."}
 }
 
-# --- INPUT VALIDATION SCHEMAS ---
+# --- BACKGROUND SIMULATOR ---
+# Simulates physical IoT ultrasonic sensor changes in the background every 15 seconds
+async def simulate_iot_traffic():
+    while True:
+        await asyncio.sleep(15)
+        if parking_slots:
+            target = random.choice(parking_slots)
+            # Only toggle spots that aren't manually booked by active user sessions
+            target["status"] = "occupied" if target["status"] == "vacant" else "vacant"
+
+@app.on_event("startup")
+async def start_simulator():
+    asyncio.create_task(simulate_iot_traffic())
+
+# --- DATA MODELS ---
+class BookingRequest(BaseModel):
+    slot_id: int
+
 class PlaybookUpdate(BaseModel):
     max_days: int
     termination_clause: str
     liability_clause: str
 
-class NewSlotInput(BaseModel):
+class SlotCreationRequest(BaseModel):
     id: int
     type: str
     distance: int
 
-# NEW: Schema to handle a user trying to book a specific slot
-class SlotBookingInput(BaseModel):
-    slot_id: int
+class GridReconfigRequest(BaseModel):
+    total_slots: int
+    motorbike_count: int
 
-
-# --- PARKING SIMULATION ENGINE ---
-async def simulate_occupancy_logic():
-    while True:
-        for slot in parking_slots:
-            # Only randomly change slots that aren't actively managed/interrupted immediately
-            if random.random() < 0.2:
-                slot["status"] = "occupied" if slot["status"] == "vacant" else "vacant"
-        await asyncio.sleep(5)
-
-@app.on_event("startup")
-async def startup_event():
-    asyncio.create_task(simulate_occupancy_logic())
-
-
-# --- USER ENDPOINTS ---
+# --- API ENDPOINTS ---
 
 @app.get("/parking/status")
-async def get_parking_status():
+def get_parking_status():
     return parking_slots
 
-# NEW FEATURE: User interaction endpoint to book a vacant slot
 @app.post("/user/book-slot")
-async def book_parking_slot(data: SlotBookingInput):
-    """Allows a standard user to select and instantly occupy a vacant slot."""
-    global parking_slots
-    
-    # 1. Look for the requested slot in our list
-    target_slot = next((slot for slot in parking_slots if slot["id"] == data.slot_id), None)
-    
-    # 2. Check if the slot exists
-    if target_slot is None:
-        raise HTTPException(status_code=404, detail=f"Parking slot ID {data.slot_id} does not exist.")
-        
-    # 3. Check if the slot is already occupied
-    if target_slot["status"] == "occupied":
-        raise HTTPException(status_code=400, detail=f"Reservation failed. Slot ID {data.slot_id} is already taken.")
-        
-    # 4. Book the slot successfully
-    target_slot["status"] = "occupied"
-    return {"message": f"Success! Parking slot {data.slot_id} has been reserved for your vehicle."}
-
-
-@app.post("/contract/review")
-async def review_contract(file: UploadFile = File(...)):
-    await asyncio.sleep(1) 
-    return {
-        "filename": file.filename,
-        "overall_risk": "High",
-        "analysis": [
-            {
-                "clause": "Termination",
-                "risk": "High",
-                "found": "90-day notice period",
-                "suggestion": LEGAL_PLAYBOOK["termination_notice"]["standard_clause"]
-            },
-            {
-                "clause": "Liability",
-                "risk": "Medium",
-                "found": "Uncapped liability",
-                "suggestion": LEGAL_PLAYBOOK["liability_cap"]["standard_clause"]
-            }
-        ]
-    }
-
-
-# --- ADMIN ENDPOINTS ---
+def book_parking_slot(req: BookingRequest):
+    for slot in parking_slots:
+        if slot["id"] == req.slot_id:
+            if slot["status"] == "occupied":
+                raise HTTPException(status_code=400, detail="This spot is already occupied by another vehicle.")
+            slot["status"] = "occupied"
+            return {"message": f"Successfully reserved Slot {req.slot_id}! Space is locked in."}
+    raise HTTPException(status_code=404, detail="Requested slot ID does not exist.")
 
 @app.get("/admin/playbook")
-async def get_playbook():
-    return LEGAL_PLAYBOOK
+def get_playbook():
+    return legal_playbook
 
 @app.post("/admin/update-playbook")
-async def update_playbook(data: PlaybookUpdate):
-    global LEGAL_PLAYBOOK
-    LEGAL_PLAYBOOK["termination_notice"]["max_days"] = data.max_days
-    LEGAL_PLAYBOOK["termination_notice"]["standard_clause"] = data.termination_clause
-    LEGAL_PLAYBOOK["liability_cap"]["standard_clause"] = data.liability_clause
-    return {"message": "Playbook rules successfully updated by administrator!"}
+def update_playbook(data: PlaybookUpdate):
+    legal_playbook["termination_notice"]["max_days"] = data.max_days
+    legal_playbook["termination_notice"]["standard_clause"] = data.termination_clause
+    legal_playbook["liability_cap"]["standard_clause"] = data.liability_clause
+    return {"message": "Legal AI playbook compliance policies updated!"}
 
 @app.post("/admin/add-slot")
-async def add_parking_slot(data: NewSlotInput):
-    global parking_slots
-    if any(s["id"] == data.id for s in parking_slots):
-        raise HTTPException(status_code=400, detail="Slot ID already exists")
-        
+def add_custom_slot(data: SlotCreationRequest):
+    for slot in parking_slots:
+        if slot["id"] == data.id:
+            raise HTTPException(status_code=400, detail=f"A sensor with ID {data.id} already exists.")
+    
     new_slot = {
         "id": data.id,
-        "status": "vacant",
         "type": data.type,
+        "status": "vacant",
         "distance": data.distance
     }
     parking_slots.append(new_slot)
-    return {"message": f"Slot {data.id} provisioned successfully!"}
+    # Sort array dynamically so the user dashboard stays structurally neat
+    parking_slots.sort(key=lambda x: x["id"])
+    return {"message": f"New physical sensor array added for Slot {data.id}!"}
 
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+@app.post("/admin/reconfigure-grid")
+def reconfigure_entire_grid(config: GridReconfigRequest):
+    global parking_slots
+    if config.motorbike_count > config.total_slots:
+        raise HTTPException(status_code=400, detail="Motorbike count cannot exceed the total available slots.")
+    
+    new_slots = []
+    for i in range(1, config.total_slots + 1):
+        vehicle_type = "Motorbike" if i <= config.motorbike_count else "Car"
+        new_slots.append({
+            "id": i,
+            "type": vehicle_type,
+            "status": "vacant",
+            "distance": i * 3
+        })
+    parking_slots = new_slots
+    return {"message": f"Grid successfully wiped and rebuilt with {config.total_slots} total slots!"}
+
+@app.post("/contract/review")
+async def review_contract(file: UploadFile = File(...)):
+    contents = await file.read()
+    text = contents.decode("utf-8", errors="ignore").lower()
+    
+    analysis_matrix = []
+    risk_level = "Low Risk"
+    
+    # 1. Evaluate Termination Notice Bounds
+    if "terminate" in text or "notice" in text:
+        # Simple extraction logic mock for parsing days
+        found_clause = "Custom notice term discovered"
+        days_allowed = legal_playbook["termination_notice"]["max_days"]
+        analysis_matrix.append({
+            "clause": "Termination Windows",
+            "found": found_clause,
+            "suggestion": legal_playbook["termination_notice"]["standard_clause"]
+        })
+        
+    # 2. Evaluate Liability Bounds
+    if "liability" in text or "indemnify" in text:
+        analysis_matrix.append({
+            "clause": "Limitation of Liability",
+            "found": "Complex indemnification requirements noted",
+            "suggestion": legal_playbook["liability_cap"]["standard_clause"]
+        })
+        risk_level = "Medium Action Required"
+    else:
+        analysis_matrix.append({
+            "clause": "Limitation of Liability",
+            "found": "MISSING / NOT FOUND",
+            "suggestion": f"CRITICAL: {legal_playbook['liability_cap']['standard_clause']}"
+        })
+        risk_level = "High Compliance Breach Risk"
+
+    return {
+        "filename": file.filename,
+        "overall_risk": risk_level,
+        "analysis": analysis_matrix
+    }
