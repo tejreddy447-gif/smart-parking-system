@@ -3,22 +3,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import random
 import asyncio
-
-app = FastAPI()
-
-# Enable CORS so Vercel can seamlessly talk to Render
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+from contextlib import asynccontextmanager
 
 # --- INTERNAL SYSTEM MEMORY (STATE) ---
-# Generates a baseline of 20 slots: 10 Motorbike (IDs 1-10) and 10 Car (IDs 11-20)
+
+# Global in-memory data store for parking slots
 parking_slots = []
+
 def initialize_default_slots():
+    """Generates a baseline of 20 slots: 10 Motorbike (IDs 1-10) and 10 Car (IDs 11-20)."""
     global parking_slots
     parking_slots = []
     for i in range(1, 21):
@@ -33,25 +26,56 @@ def initialize_default_slots():
 initialize_default_slots()
 
 legal_playbook = {
-    "termination_notice": {"max_days": 30, "standard_clause": "Either party may terminate with 30 days written notice."},
-    "liability_cap": {"standard_clause": "Total liability shall not exceed the fees paid under this agreement."}
+    "termination_notice": {
+        "max_days": 30, 
+        "standard_clause": "Either party may terminate with 30 days written notice."
+    },
+    "liability_cap": {
+        "standard_clause": "Total liability shall not exceed the fees paid under this agreement."
+    }
 }
 
 # --- BACKGROUND SIMULATOR ---
-# Simulates physical IoT ultrasonic sensor changes in the background every 15 seconds
+
 async def simulate_iot_traffic():
+    """Simulates physical IoT ultrasonic sensor changes in the background every 15 seconds."""
     while True:
         await asyncio.sleep(15)
         if parking_slots:
             target = random.choice(parking_slots)
-            # Only toggle spots that aren't manually booked by active user sessions
+            # Toggle status for IoT simulation
             target["status"] = "occupied" if target["status"] == "vacant" else "vacant"
 
-@app.on_event("startup")
-async def start_simulator():
-    asyncio.create_task(simulate_iot_traffic())
+# --- LIFESPAN MANAGER (Modern replacement for @app.on_event) ---
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: Start background IoT simulation task
+    task = asyncio.create_task(simulate_iot_traffic())
+    yield
+    # Shutdown: Cancel background task
+    task.cancel()
+
+# --- FASTAPI APP INITIALIZATION ---
+
+app = FastAPI(
+    title="Smart City & Legal AI API",
+    description="Backend API for Smart Parking Grid Telemetry and Commercial Contract Analysis.",
+    version="1.0.0",
+    lifespan=lifespan
+)
+
+# Enable CORS for cross-origin frontend communication
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Restrict to specific origins in strict production environments
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # --- DATA MODELS ---
+
 class BookingRequest(BaseModel):
     slot_id: int
 
@@ -71,12 +95,18 @@ class GridReconfigRequest(BaseModel):
 
 # --- API ENDPOINTS ---
 
+@app.get("/")
+def read_root():
+    return {"status": "online", "message": "Smart City & Legal AI Backend is running."}
+
 @app.get("/parking/status")
 def get_parking_status():
+    """Retrieve active status of all parking slots."""
     return parking_slots
 
 @app.post("/user/book-slot")
 def book_parking_slot(req: BookingRequest):
+    """Reserve a specific vacant parking spot."""
     for slot in parking_slots:
         if slot["id"] == req.slot_id:
             if slot["status"] == "occupied":
@@ -87,10 +117,12 @@ def book_parking_slot(req: BookingRequest):
 
 @app.get("/admin/playbook")
 def get_playbook():
+    """Retrieve current legal playbook compliance configuration."""
     return legal_playbook
 
 @app.post("/admin/update-playbook")
 def update_playbook(data: PlaybookUpdate):
+    """Update legal AI playbook compliance rules."""
     legal_playbook["termination_notice"]["max_days"] = data.max_days
     legal_playbook["termination_notice"]["standard_clause"] = data.termination_clause
     legal_playbook["liability_cap"]["standard_clause"] = data.liability_clause
@@ -98,6 +130,7 @@ def update_playbook(data: PlaybookUpdate):
 
 @app.post("/admin/add-slot")
 def add_custom_slot(data: SlotCreationRequest):
+    """Dynamically append a single custom parking slot to the grid array."""
     for slot in parking_slots:
         if slot["id"] == data.id:
             raise HTTPException(status_code=400, detail=f"A sensor with ID {data.id} already exists.")
@@ -109,15 +142,15 @@ def add_custom_slot(data: SlotCreationRequest):
         "distance": data.distance
     }
     parking_slots.append(new_slot)
-    # Sort array dynamically so the user dashboard stays structurally neat
     parking_slots.sort(key=lambda x: x["id"])
     return {"message": f"New physical sensor array added for Slot {data.id}!"}
 
 @app.post("/admin/reconfigure-grid")
 def reconfigure_entire_grid(config: GridReconfigRequest):
+    """Wipe and reinitialize the entire grid layout with custom dimensions."""
     global parking_slots
     if config.motorbike_count > config.total_slots:
-        raise HTTPException(status_code=400, detail="Motorbike count cannot exceed the total available slots.")
+        raise HTTPException(status_code=400, detail="Motorbike count cannot exceed total available slots.")
     
     new_slots = []
     for i in range(1, config.total_slots + 1):
@@ -133,6 +166,7 @@ def reconfigure_entire_grid(config: GridReconfigRequest):
 
 @app.post("/contract/review")
 async def review_contract(file: UploadFile = File(...)):
+    """Analyze an uploaded text contract file against active legal playbook policies."""
     contents = await file.read()
     text = contents.decode("utf-8", errors="ignore").lower()
     
@@ -141,9 +175,7 @@ async def review_contract(file: UploadFile = File(...)):
     
     # 1. Evaluate Termination Notice Bounds
     if "terminate" in text or "notice" in text:
-        # Simple extraction logic mock for parsing days
-        found_clause = "Custom notice term discovered"
-        days_allowed = legal_playbook["termination_notice"]["max_days"]
+        found_clause = "Custom notice term discovered in contract text."
         analysis_matrix.append({
             "clause": "Termination Windows",
             "found": found_clause,
@@ -154,7 +186,7 @@ async def review_contract(file: UploadFile = File(...)):
     if "liability" in text or "indemnify" in text:
         analysis_matrix.append({
             "clause": "Limitation of Liability",
-            "found": "Complex indemnification requirements noted",
+            "found": "Complex indemnification requirements noted.",
             "suggestion": legal_playbook["liability_cap"]["standard_clause"]
         })
         risk_level = "Medium Action Required"

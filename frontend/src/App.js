@@ -5,8 +5,8 @@ function App() {
   const [analysis, setAnalysis] = useState(null);
   const [loading, setLoading] = useState(false);
   
-  // Hardwired straight to your live deployment server
-  const API_BASE_URL = "https://smart-parking-backend.onrender.com";
+  // Clean dynamic base URL (defaults to local backend unless configured in .env)
+  const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || "http://localhost:8000";
   
   // Admin Panel states
   const [showAdmin, setShowAdmin] = useState(false);
@@ -154,7 +154,7 @@ function App() {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '30px' }}>
         <div>
           <h1 style={{ color: '#1a73e8', margin: 0 }}>Smart City & Legal AI Dashboard</h1>
-          <p style={{ margin: '5px 0 0 0', color: '#666' }}>Active Node Terminal Connected via Render Architecture</p>
+          <p style={{ margin: '5px 0 0 0', color: '#666' }}>Active Node Terminal</p>
         </div>
         <button 
           onClick={() => setShowAdmin(!showAdmin)} 
@@ -279,7 +279,7 @@ function App() {
           ) : ( 
             <div style={{ gridColumn: '1/-1', textAlign: 'center', padding: '4px', color: '#666' }}>
               <p style={{ fontWeight: 'bold', fontSize: '1.2em' }}>Awaiting active infrastructure stream telemetry...</p>
-              <p style={{ fontSize: '0.9em' }}>Verify that your Render service is turned on and running correctly.</p>
+              <p style={{ fontSize: '0.9em' }}>Verify that your local backend service is running on <code style={{ background: '#e0e0e0', padding: '2px 6px', borderRadius: '4px' }}>http://localhost:8000</code>.</p>
             </div>
           )}
         </div>
